@@ -331,6 +331,18 @@ def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_pa
         out_file.write(data)
 
 
+def _delete_datastore_file(content, datacenter_obj, datastore_path):
+    task = content.fileManager.DeleteDatastoreFile_Task(
+        name=datastore_path, datacenter=datacenter_obj
+    )
+    while task.info.state not in ("success", "error"):
+        time.sleep(1.0)
+    if task.info.state != "success":
+        raise RuntimeError(
+            "Unable to delete datastore file: {0}".format(task.info.error)
+        )
+
+
 class VMKeyboard(object):
     """
     Simple keyboard sender using PutUsbScanCodes.
@@ -419,8 +431,8 @@ def parse_args(argv=None):
         "--password", "cmb@Dm1n",
         "--vmname", "SBCE-VM",
         "--no-validate-certs",
-        "--no-screenshot",
-        "--text", "TEST !@#$%^&*()_+-=~`",
+        #"--no-screenshot",
+        "--text", "echo `date`",
     ])
     p = argparse.ArgumentParser(
         description="Send all CHAR_MAP characters to a VMware VM console."
@@ -451,6 +463,11 @@ def parse_args(argv=None):
         "--text",
         help="Text to send to the VM console using the HID mapping in CHAR_MAP",
         default=TEST,
+    )
+    p.add_argument(
+        "--keep-screenshot",
+        action="store_true",
+        help="Leave the screenshot file in the datastore after downloading it",
     )
     p.add_argument(
         "--no-screenshot",
@@ -577,6 +594,21 @@ def main(argv=None):
                                 out_path=out_file,
                                 verify_tls=not args.no_validate_certs,
                             )
+                            if not args.keep_screenshot:
+                                print("Deleting screenshot from datastore: {0}".format(datastore_path))
+                                try:
+                                    _delete_datastore_file(
+                                        content=content,
+                                        datacenter_obj=dc,
+                                        datastore_path=datastore_path,
+                                    )
+                                except Exception as e:
+                                    print(
+                                        "Warning: failed to delete datastore screenshot: {0}".format(e),
+                                        file=sys.stderr,
+                                    )
+                            else:
+                                print("Leaving screenshot in datastore as requested.")
                     else:
                         print(
                             "Screenshot task succeeded but no datastore path was returned "
