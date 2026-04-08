@@ -10,9 +10,14 @@ __metaclass__ = type
 Shared VMware console keyboard utilities for Ansible modules and standalone tools.
 """
 
+import os
 import ssl
+import sys
 import time
 import argparse
+import datetime
+import urllib.request
+import urllib.parse
 
 try:
     from pyVim.connect import SmartConnect, Disconnect  # type: ignore
@@ -180,14 +185,84 @@ def find_vm(content, vmname, datacenter=None, esxi_hostname=None):
     return matches[0]
 
 
-def press_key(vm, hid_code):
+def press_key(vm, hid_code, modifiers=0):
     spec = vim.vm.UsbScanCodeSpec()
     down = vim.vm.UsbScanCodeSpec.KeyEvent()
     down.usbHidCode = (hid_code << 16) | 0x07
+    if modifiers:
+        down.modifiers = modifiers
     up = vim.vm.UsbScanCodeSpec.KeyEvent()
     up.usbHidCode = 0
     spec.keyEvents = [down, up]
     return vm.PutUsbScanCodes(spec)
+
+
+def _parse_datastore_path(result):
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return result
+    if hasattr(result, "screenshotFile"):
+        return result.screenshotFile
+    if hasattr(result, "fileName"):
+        return result.fileName
+    if hasattr(result, "path"):
+        return result.path
+    return None
+
+
+def _get_vm_datacenter(vm):
+    current = getattr(vm, "parent", None)
+    while current is not None:
+        if isinstance(current, vim.Datacenter):
+            return current
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _normalize_datastore_url(url, host):
+    if not url:
+        return url
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc == "*" and host:
+        return urllib.parse.urlunparse(parsed._replace(netloc=host))
+    return url
+
+
+def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_path, verify_tls=True):
+    fti = content.fileManager.InitiateFileTransferFromDatastore(
+        datacenter=datacenter_obj, datastorePath=datastore_path
+    )
+    url = getattr(fti, "url", None)
+    if not url:
+        raise RuntimeError("Unable to obtain datastore transfer URL")
+
+    stub = getattr(si, "_stub", None)
+    host = None
+    if stub is not None:
+        host = getattr(stub, "host", None)
+        if not host:
+            uri = getattr(stub, "uri", None)
+            if uri:
+                parsed_uri = urllib.parse.urlparse(uri)
+                host = parsed_uri.netloc
+
+    url = _normalize_datastore_url(url, host)
+    headers = {}
+    cookie = getattr(stub, "cookie", None)
+    if cookie:
+        headers["Cookie"] = cookie
+
+    ctx = None
+    if not verify_tls:
+        ctx = ssl._create_unverified_context()
+
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, context=ctx) as response:
+        data = response.read()
+
+    with open(out_path, "wb") as out_file:
+        out_file.write(data)
 
 
 class VMKeyboard(object):
@@ -196,8 +271,8 @@ class VMKeyboard(object):
 
     By default, emulates the ESXi 7.0.3-safe behavior:
       - Uppercase letters via CapsLock toggling.
-      - Shifted punctuation (e.g. !, @, +, ?, etc.) are treated as unsupported
-        and reported as skipped, because ESXi ignored modifier bytes in tests.
+      - Shifted punctuation and symbols are sent using the shift modifier so all
+        mapped CHAR_MAP keys are exercised during testing.
     """
 
     def __init__(self, vm, delay=0.05):
@@ -237,23 +312,16 @@ class VMKeyboard(object):
                 continue
             hid, mod = CHAR_MAP[ch]
             if mod == MOD_LSHIFT and ch.isalpha():
-                # ESXi-safe path: uppercase via CapsLock
+                # ESXi-safe path for uppercase letters: CapsLock toggle.
                 self._set_caps(True)
                 press_key(self.vm, hid)
                 time.sleep(self.delay)
             elif mod == MOD_LSHIFT:
-                # Shift-modified punctuation/symbols are not reliably supported.
-                # Workaround: use numpad keys for a small subset that ESXi accepts.
-                if ch == "*":
-                    self._set_caps(False)
-                    press_key(self.vm, SPECIAL_KEYS["NUMPAD_STAR"])
-                    time.sleep(self.delay)
-                elif ch == "+":
-                    self._set_caps(False)
-                    press_key(self.vm, SPECIAL_KEYS["NUMPAD_PLUS"])
-                    time.sleep(self.delay)
-                else:
-                    skipped.append(repr(ch))
+                # Attempt all shift-modified punctuation/symbols by sending the
+                # shifted HID code rather than skipping them.
+                self._set_caps(False)
+                press_key(self.vm, hid, modifiers=MOD_LSHIFT)
+                time.sleep(self.delay)
             else:
                 self._set_caps(False)
                 press_key(self.vm, hid)
@@ -344,24 +412,35 @@ def main(argv=None):
         print("Connected. VM runtime host:", getattr(vm.runtime.host, "name", "?"))
 
         if args.dry_run:
-            print("Dry run. Characters that would be sent:")
-            for ch in sorted(CHAR_MAP.keys()):
-                print(ch, end="")
-            print()
+            line_chars = [ch for ch in sorted(CHAR_MAP.keys()) if ch not in ("\n", "\t", "\b")]
+            print("Dry run. Characters that would be sent in one line:")
+            print("".join(line_chars))
+            print(
+                "Special keys to be sent: {0}".format(
+                    ", ".join(sorted(SPECIAL_KEYS.keys()))
+                )
+            )
             return 0
 
         kb = VMKeyboard(vm, delay=args.delay)
         kb.reset_caps()
 
+        line_chars = [ch for ch in sorted(CHAR_MAP.keys()) if ch not in ("\n", "\t", "\b")]
+        line_text = "".join(line_chars)
         all_skipped = []
-        print("Sending characters from CHAR_MAP to VM console...")
-        for ch in sorted(CHAR_MAP.keys()):
-            print(ch, end="", flush=True)
-            skipped = kb.type(ch)
-            all_skipped.extend(skipped)
-            time.sleep(args.delay)
 
-        print("\nDone sending characters.")
+        print("Sending CHAR_MAP characters in a single line to VM console...")
+        print(line_text)
+        skipped = kb.type(line_text)
+        all_skipped.extend(skipped)
+
+        print("Sending special keys to VM console...")
+        for key_name in sorted(SPECIAL_KEYS.keys()):
+            print(key_name, end=" ", flush=True)
+            kb.special(key_name)
+        print()
+
+        print("\nDone sending keys.")
         if all_skipped:
             uniq = sorted(set(all_skipped))
             print(
@@ -393,11 +472,12 @@ def main(argv=None):
                             file=sys.stderr,
                         )
                     else:
-                        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-                        out_dir = os.path.join(repo_root, "data", "screenshots")
-                        os.makedirs(out_dir, exist_ok=True)
+                        script_dir = os.path.dirname(os.path.abspath(__file__))
                         ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                        out_file = os.path.join(out_dir, "{0}-{1}.png".format(args.vmname, ts))
+                        out_file = os.path.join(
+                            script_dir,
+                            "{0}-console-test-{1}.png".format(args.vmname, ts),
+                        )
 
                         print("Downloading screenshot to:", out_file)
                         _download_datastore_file(
