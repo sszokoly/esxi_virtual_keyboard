@@ -11,6 +11,7 @@ Shared VMware console keyboard utilities for Ansible modules and standalone tool
 """
 
 import os
+import re
 import ssl
 import sys
 import time
@@ -18,6 +19,7 @@ import argparse
 import datetime
 import urllib.request
 import urllib.parse
+
 
 try:
     from pyVim.connect import SmartConnect, Disconnect  # type: ignore
@@ -34,6 +36,7 @@ except Exception:  # pragma: no cover - import-time capability flag
 MOD_NONE = 0x00
 MOD_LSHIFT = 0x02
 HID_CAPSLOCK = 0x39
+TEST = """echo " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&^()_*+-.,:;<=>?[]{}~`date`'"\!/|wc -c"""
 
 SPECIAL_KEYS = {
     "ENTER": 0x28,
@@ -103,7 +106,6 @@ CHAR_MAP = {
     ' ':  (0x2C, MOD_NONE),
     '\n': (0x28, MOD_NONE),  # Enter
     '\t': (0x2B, MOD_NONE),  # Tab
-    '\b': (0x2A, MOD_NONE),  # Backspace
     '-':  (0x2D, MOD_NONE),  '_':  (0x2D, MOD_LSHIFT),
     '=':  (0x2E, MOD_NONE),  '+':  (0x2E, MOD_LSHIFT),
     '[':  (0x2F, MOD_NONE),  '{':  (0x2F, MOD_LSHIFT),
@@ -185,12 +187,27 @@ def find_vm(content, vmname, datacenter=None, esxi_hostname=None):
     return matches[0]
 
 
+def _make_modifier_type(modifiers):
+    if isinstance(modifiers, vim.vm.UsbScanCodeSpec.ModifierType):
+        return modifiers
+    mod = vim.vm.UsbScanCodeSpec.ModifierType()
+    mod.leftControl = bool(modifiers & 0x01)
+    mod.leftShift = bool(modifiers & 0x02)
+    mod.leftAlt = bool(modifiers & 0x04)
+    mod.leftGui = bool(modifiers & 0x08)
+    mod.rightControl = bool(modifiers & 0x10)
+    mod.rightShift = bool(modifiers & 0x20)
+    mod.rightAlt = bool(modifiers & 0x40)
+    mod.rightGui = bool(modifiers & 0x80)
+    return mod
+
+
 def press_key(vm, hid_code, modifiers=0):
     spec = vim.vm.UsbScanCodeSpec()
     down = vim.vm.UsbScanCodeSpec.KeyEvent()
     down.usbHidCode = (hid_code << 16) | 0x07
     if modifiers:
-        down.modifiers = modifiers
+        down.modifiers = _make_modifier_type(modifiers)
     up = vim.vm.UsbScanCodeSpec.KeyEvent()
     up.usbHidCode = 0
     spec.keyEvents = [down, up]
@@ -229,13 +246,62 @@ def _normalize_datastore_url(url, host):
     return url
 
 
-def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_path, verify_tls=True):
-    fti = content.fileManager.InitiateFileTransferFromDatastore(
-        datacenter=datacenter_obj, datastorePath=datastore_path
+def _build_datastore_file_url(datastore_path, datacenter_obj, host):
+    if not isinstance(datastore_path, str):
+        return None
+    match = re.match(r"^\s*\[([^\]]+)\]\s*(.+)$", datastore_path)
+    if not match:
+        return None
+
+    datastore_name = match.group(1)
+    file_path = match.group(2).lstrip("/")
+    if not file_path:
+        return None
+
+    if not host or host == "*":
+        return None
+    if datacenter_obj is None or not getattr(datacenter_obj, "name", None):
+        return None
+
+    encoded_path = urllib.parse.quote(file_path, safe="/")
+    encoded_dc = urllib.parse.quote(datacenter_obj.name, safe="")
+    encoded_ds = urllib.parse.quote(datastore_name, safe="")
+    return "https://{host}/folder/{path}?dcPath={dc}&dsName={ds}".format(
+        host=host, path=encoded_path, dc=encoded_dc, ds=encoded_ds
     )
-    url = getattr(fti, "url", None)
-    if not url:
-        raise RuntimeError("Unable to obtain datastore transfer URL")
+
+
+def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_path, verify_tls=True):
+    download_url = None
+    transfer_method = getattr(content.fileManager, "InitiateFileTransferFromDatastore", None)
+    if transfer_method is not None:
+        fti = content.fileManager.InitiateFileTransferFromDatastore(
+            datacenter=datacenter_obj, datastorePath=datastore_path
+        )
+        download_url = getattr(fti, "url", None)
+        if not download_url:
+            raise RuntimeError("Unable to obtain datastore transfer URL")
+    elif isinstance(datastore_path, str) and datastore_path.startswith(
+        ("http://", "https://")
+    ):
+        download_url = datastore_path
+    else:
+        stub = getattr(si, "_stub", None)
+        host = None
+        if stub is not None:
+            host = getattr(stub, "host", None)
+            if not host:
+                uri = getattr(stub, "uri", None)
+                if uri:
+                    parsed_uri = urllib.parse.urlparse(uri)
+                    host = parsed_uri.netloc
+
+        download_url = _build_datastore_file_url(datastore_path, datacenter_obj, host)
+        if download_url is None:
+            raise RuntimeError(
+                "Unable to download datastore file: neither FileManager.InitiateFileTransferFromDatastore nor datastore URL build is available. "
+                "datastore_path={0!r}".format(datastore_path)
+            )
 
     stub = getattr(si, "_stub", None)
     host = None
@@ -247,7 +313,7 @@ def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_pa
                 parsed_uri = urllib.parse.urlparse(uri)
                 host = parsed_uri.netloc
 
-    url = _normalize_datastore_url(url, host)
+    download_url = _normalize_datastore_url(download_url, host)
     headers = {}
     cookie = getattr(stub, "cookie", None)
     if cookie:
@@ -257,7 +323,7 @@ def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_pa
     if not verify_tls:
         ctx = ssl._create_unverified_context()
 
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(download_url, headers=headers)
     with urllib.request.urlopen(request, context=ctx) as response:
         data = response.read()
 
@@ -347,6 +413,15 @@ def connect_vsphere(host, user, password, port=443, validate_certs=True):
 
 
 def parse_args(argv=None):
+    sys.argv.extend([
+        "--host", "192.168.200.161",
+        "--user", "root",
+        "--password", "cmb@Dm1n",
+        "--vmname", "SBCE-VM",
+        "--no-validate-certs",
+        "--no-screenshot",
+        "--text", "TEST !@#$%^&*()_+-=~`",
+    ])
     p = argparse.ArgumentParser(
         description="Send all CHAR_MAP characters to a VMware VM console."
     )
@@ -359,7 +434,7 @@ def parse_args(argv=None):
         action="store_true",
         help="Do not validate TLS certificates",
     )
-    p.add_argument("--datacenter", help="Datacenter name", default=None)
+    p.add_argument("--datacenter", help="Datacenter name", default="ha-datacenter")
     p.add_argument(
         "--esxi-hostname",
         help="Require VM to run on this ESXi host (name or first label)",
@@ -371,6 +446,16 @@ def parse_args(argv=None):
         type=float,
         default=0.1,
         help="Delay between key presses (seconds, default 0.1)",
+    )
+    p.add_argument(
+        "--text",
+        help="Text to send to the VM console using the HID mapping in CHAR_MAP",
+        default=TEST,
+    )
+    p.add_argument(
+        "--no-screenshot",
+        action="store_true",
+        help="Do not request or download a VM screenshot after sending keys",
     )
     p.add_argument(
         "--dry-run",
@@ -425,19 +510,22 @@ def main(argv=None):
         kb = VMKeyboard(vm, delay=args.delay)
         kb.reset_caps()
 
-        line_chars = [ch for ch in sorted(CHAR_MAP.keys()) if ch not in ("\n", "\t", "\b")]
-        line_text = "".join(line_chars)
         all_skipped = []
+        if args.text is not None:
+            line_text = args.text
+            print("Sending provided text to VM console...")
+        else:
+            line_chars = [ch for ch in sorted(CHAR_MAP.keys()) if ch not in ("\n", "\t", "\b")]
+            line_text = "".join(line_chars)
+            print("Sending CHAR_MAP characters in a single line to VM console...")
 
-        print("Sending CHAR_MAP characters in a single line to VM console...")
         print(line_text)
-        skipped = kb.type(line_text)
+        if args.text is not None:
+            skipped = kb.type_line(line_text)
+        else:
+            skipped = kb.type(line_text)
         all_skipped.extend(skipped)
 
-        print("Sending special keys to VM console...")
-        for key_name in sorted(SPECIAL_KEYS.keys()):
-            print(key_name, end=" ", flush=True)
-            kb.special(key_name)
         print()
 
         print("\nDone sending keys.")
@@ -449,54 +537,55 @@ def main(argv=None):
                 )
             )
 
-        # Take a screenshot for visual verification
-        try:
-            print("Requesting VM screenshot via CreateScreenshot_Task()...")
-            task = vm.CreateScreenshot_Task()
-            # Simple wait loop
-            while task.info.state not in ("success", "error"):
-                time.sleep(1.0)
-            if task.info.state == "success":
-                datastore_path = _parse_datastore_path(task.info.result)
-                print("Screenshot task completed successfully.")
-                if datastore_path:
-                    # Resolve datacenter for transfer API
-                    if args.datacenter:
-                        dc = find_datacenter(content, args.datacenter)
-                    else:
-                        dc = _get_vm_datacenter(vm)
-                    if dc is None:
-                        print(
-                            "Could not resolve datacenter for VM; cannot download screenshot. "
-                            "Datastore path was: {0}".format(datastore_path),
-                            file=sys.stderr,
-                        )
-                    else:
-                        script_dir = os.path.dirname(os.path.abspath(__file__))
-                        ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                        out_file = os.path.join(
-                            script_dir,
-                            "{0}-console-test-{1}.png".format(args.vmname, ts),
-                        )
+        if not args.no_screenshot:
+            # Take a screenshot for visual verification
+            try:
+                print("Requesting VM screenshot via CreateScreenshot_Task()...")
+                task = vm.CreateScreenshot_Task()
+                # Simple wait loop
+                while task.info.state not in ("success", "error"):
+                    time.sleep(1.0)
+                if task.info.state == "success":
+                    datastore_path = _parse_datastore_path(task.info.result)
+                    print("Screenshot task completed successfully.")
+                    if datastore_path:
+                        # Resolve datacenter for transfer API
+                        if args.datacenter:
+                            dc = find_datacenter(content, args.datacenter)
+                        else:
+                            dc = _get_vm_datacenter(vm)
+                        if dc is None:
+                            print(
+                                "Could not resolve datacenter for VM; cannot download screenshot. "
+                                "Datastore path was: {0}".format(datastore_path),
+                                file=sys.stderr,
+                            )
+                        else:
+                            script_dir = os.path.dirname(os.path.abspath(__file__))
+                            ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                            out_file = os.path.join(
+                                script_dir,
+                                "{0}-console-test-{1}.png".format(args.vmname, ts),
+                            )
 
-                        print("Downloading screenshot to:", out_file)
-                        _download_datastore_file(
-                            si=si,
-                            content=content,
-                            datacenter_obj=dc,
-                            datastore_path=datastore_path,
-                            out_path=out_file,
-                            verify_tls=not args.no_validate_certs,
+                            print("Downloading screenshot to:", out_file)
+                            _download_datastore_file(
+                                si=si,
+                                content=content,
+                                datacenter_obj=dc,
+                                datastore_path=datastore_path,
+                                out_path=out_file,
+                                verify_tls=not args.no_validate_certs,
+                            )
+                    else:
+                        print(
+                            "Screenshot task succeeded but no datastore path was returned "
+                            "(task.info.result={0!r})".format(task.info.result)
                         )
                 else:
-                    print(
-                        "Screenshot task succeeded but no datastore path was returned "
-                        "(task.info.result={0!r})".format(task.info.result)
-                    )
-            else:
-                print("Screenshot task failed:", task.info.error)
-        except Exception as e:  # pragma: no cover - depends on vSphere backing
-            print("Failed to create screenshot:", e, file=sys.stderr)
+                    print("Screenshot task failed:", task.info.error)
+            except Exception as e:  # pragma: no cover - depends on vSphere backing
+                print("Failed to create screenshot:", e, file=sys.stderr)
 
         return 0
     except Exception as e:
