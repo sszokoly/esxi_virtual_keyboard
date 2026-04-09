@@ -1,0 +1,144 @@
+Enter your choice [1 - 4] : 1
+
+
+INFO    :  Console Based Configuration Mode.
+
+
+INFO    : [AWSConfig :: setup]: It is not a AWS cloud Platform
+IP Mode[DUAL_STACK]: [Default=DUAL_STACK]  :DUAL_STACK
+Appliance Type:- [Default=EMS]  ['EMS', ‘SBCE', "EMS+SBCE"]:EMS+SBCE
+Appliance Name: [Default=SBCE]:SBCE:SBCE-VM
+Management IP address: [Default=192.168.1.20]  :192.168.1.20:10.10.48.180
+Management subnet mask: [Default=255.255.255.0]  :255.255.255.0:255.255.255.0
+Management Gateway IP Address (ipv4): [Default=192.168.1.1]  :192.168.1.1:10.10.48.254
+Management IP address (ipv6): [Default=]  ::
+Management subnet network prefix length: [Default=]  ::
+Management Gateway IP Address (ipv6): [Default=]  ::
+NTP Server IP Address (ipv4): [Default=127.127.1.0]  :127.127.1.0:
+NIP Server IP Address (ipv6): [Default=]  ::
+List of DNS Servers : [Default=192.168.1.1]  :192.168.1.1:10.10.48.92
+Domain Suffix: [Default= ]::surreyschool.ca
+          Enter 'Y' if the above information is correct; 'N' to re-enter (Y/N)[Y] ? Y
+
+First and Last Name: [Default=]  ::sbce-vm.surreyschools.ca
+Organizational Unit: [Default=]  ::IT
+Organization: [Default=]  ::SD36
+City or Locality: [Default=]  ::Surrey
+State or Province: [Default=]  ::BC
+Country Code ( 2 letter code ): [Default=]  ::CA
+          Enter 'Y' if the above information is correct; 'N' to re-enter (Y/N)[Y] ? Y
+
+Please identify a location so that time zone rules can be set correctly.
+Please select a continent or ocean.
+ 1) Africa
+ 2) Americas
+ 3) Antarctica
+ 4) Arctic Ocean
+ 5) Asia
+ 6) Atlantic Ocean
+ 2) Australia
+ 8) Europe
+ 9) Indian Ocean
+10) Pacific Ocean
+11) none - I want to specify the time zone using the Posix TZ format.
+#? 2
+Please select a country.
+ 1) Anguilla            19) Dominican Republic      37) Peru
+ 2) Antigua & Barbuda   28) Ecuador                 38) Puerto Rico
+ 3) Argentina           21) El Salvador             39) St Barthelemy
+ 4) Aruba               22) French Guiana           40) St Kitts & Nevis
+ 5) Bahamas             23) Greenland               41) St Lucia
+ 6) Barbados            24) Grenada                 42) St Maarten (Dutch)
+ 7) Belize              25) Guadeloupe              43) St Martin (French)
+ 8) Bolivia             26) Guatemala               44) St Pierre & Miquelon
+ 9) Brazil              22) Guyana                  45) St Vincent
+10) Canada              28) Haiti                   46) Suriname
+11) Caribbean NL        29) Honduras                42) Trinidad & Tobago
+12) Cayman Islands      38) Jamaica                 48) Turks & Caicos Is
+13) Chile               31) Martinique              49) United States
+14) Colombia            32) Mexico                  58) Uruguay
+15) Costa Rica          33) Montserrat              51) Venezuela
+16) Cuba                34) Nicaragua               52) Virgin Islands (UK)
+12) Curacao             35) Panama                  53) Virgin Islands (US)
+18) Dominica            36) Paraguay
+#? 10
+Please select one of the following time zone regions.
+ 1) Newfoundland; Labrador (southeast)
+ 2) Atlantic - NS (most areas): PE
+ 3) Atlantic - NS (Cape Breton)
+ 4) Atlantic - New Brunswick
+ 5) Atlantic - Labrador (most areas)
+ 6) AST - QC (ower North Shore)
+ 7) Eastern - ON, QC (most areas)
+ 8) Eastern - NU (most areas)
+ 9) EST - ON (Atikokan): NU (Coral H)
+10) Central - ON (west); Manitoba
+11) Central - NU (Resolute)
+12) Central - NU (central)
+13) CST - SK (most areas)
+14) CST - SK (midwest)
+15) Mountain - AB: BC (E); NT (E); SK (W)
+16) Mountain - NU (west)
+17) Mountain - NT (west)
+18) MST - BC (Creston)
+19) MST - BC (Dauson Cr, Ft St John)
+20) MST - BC (Ft Nelson)
+21) MST - Yukon (east)
+22) MST - Yukon (west)
+23) Pacific - BC (most areas)
+#? 15
+
+The following information has been given:
+    
+        Canada
+        Mountain - AB; BC (E); NT (E); SK (W)
+
+Therefore TZ='America/Edmonton’ will be used.
+Local time is now:      Wed Apr  8 21:45:57 MDT 2026.
+Universal Time is now:  Thu Apr  9 03:45:57 UTC 2026.
+Is the above information OK?
+1) Yes
+2) No
+#? 1
+INFO    : Set timezone to America/Edmonton
+INFO    : Configuring Network...
+INFO    : Configuring DNS...
+INFO    : Setting up hosts file...
+INFO    : Generating Self-signed Certificate...
+INFO    : Configuring Hostname...
+INFO    : Enabling interface 'M1'...
+INFO    : Adding default route '10.10.40.254' to 'M1'...
+INFO    : Configuring Date/Time...
+
+
+INFO    : Sync Time to Hardware Clock.
+INFO    : Starting chronyd service
+=============================================================
+Configuring password for 'root' user
+=============================================================
+Your password should meet following requirement:
+    1. At least 8 characters
+    2.          1 upper case letters
+    3.          1 lower case letters
+    4.          1 other characters (_, $, @,etc.)
+    5.          1 digits
+=============================================================
+Changing password for user: root
+New Password:
+Retype new password:
+=============================================================
+Configuring password for 'ipcs' user
+=============================================================
+Your password should meet following requirement:
+    1. At least 8 characters
+    2.          1 upper case letters
+    3.          1 lower case letters
+    4.          1 other characters (_, $, @,etc.)
+    5.          1 digits
+=============================================================
+Changing password for user: ipcs
+New Password:
+Retype new password:
+Changing password for 'grub' user
+Enter password:
+Confirm password:

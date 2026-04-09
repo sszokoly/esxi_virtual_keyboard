@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - import-time capability flag
 MOD_NONE = 0x00
 MOD_LSHIFT = 0x02
 HID_CAPSLOCK = 0x39
-TEST = """echo " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&^()_*+-.,:;<=>?[]{}~`date`'"\!/|wc -c"""
+TEST = """echo " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&^()_*+-.,:;<=>?[]{}~`date`'"\!/|wc -c\n"""
 
 SPECIAL_KEYS = {
     "ENTER": 0x28,
@@ -409,7 +409,6 @@ class VMKeyboard(object):
 
     def type_line(self, text):
         skipped = self.type(text)
-        self.special("ENTER")
         return skipped
 
 
@@ -424,70 +423,10 @@ def connect_vsphere(host, user, password, port=443, validate_certs=True):
     return si
 
 
-def parse_args(argv=None):
-    sys.argv.extend([
-        "--host", "192.168.200.161",
-        "--user", "root",
-        "--password", "cmb@Dm1n",
-        "--vmname", "SBCE-VM",
-        "--no-validate-certs",
-        #"--no-screenshot",
-        "--text", "echo `date`",
-    ])
-    p = argparse.ArgumentParser(
-        description="Send all CHAR_MAP characters to a VMware VM console."
-    )
-    p.add_argument("--host", required=True, help="vCenter or ESXi hostname/IP")
-    p.add_argument("--user", required=True, help="Username")
-    p.add_argument("--password", required=True, help="Password")
-    p.add_argument("--port", type=int, default=443, help="HTTPS port (default 443)")
-    p.add_argument(
-        "--no-validate-certs",
-        action="store_true",
-        help="Do not validate TLS certificates",
-    )
-    p.add_argument("--datacenter", help="Datacenter name", default="ha-datacenter")
-    p.add_argument(
-        "--esxi-hostname",
-        help="Require VM to run on this ESXi host (name or first label)",
-        default=None,
-    )
-    p.add_argument("--vmname", required=True, help="Virtual machine name")
-    p.add_argument(
-        "--delay",
-        type=float,
-        default=0.1,
-        help="Delay between key presses (seconds, default 0.1)",
-    )
-    p.add_argument(
-        "--text",
-        help="Text to send to the VM console using the HID mapping in CHAR_MAP",
-        default=TEST,
-    )
-    p.add_argument(
-        "--keep-screenshot",
-        action="store_true",
-        help="Leave the screenshot file in the datastore after downloading it",
-    )
-    p.add_argument(
-        "--no-screenshot",
-        action="store_true",
-        help="Do not request or download a VM screenshot after sending keys",
-    )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only print characters that would be sent, do not send any keys",
-    )
-    return p.parse_args(argv)
-
-
-def main(argv=None):
+def main(args):
     if not HAS_PYVMOMI:
         print("pyVmomi is required for this tester", file=sys.stderr)
         return 1
-
-    args = parse_args(argv)
 
     print(
         "Connecting to {host} as {user}, vm={vm}".format(
@@ -631,4 +570,63 @@ def main(argv=None):
                 pass
 
 if __name__ == "__main__":
-    main()
+    def parse_args(argv=None):
+        p = argparse.ArgumentParser(
+            description="Send all CHAR_MAP characters to a VMware VM console."
+        )
+        p.add_argument("--host", required=True, help="vCenter or ESXi hostname/IP")
+        p.add_argument("--user", required=True, help="Username")
+        p.add_argument("--password", required=True, help="Password")
+        p.add_argument(
+            "--port", type=int, default=443, help="HTTPS port (default 443)"
+        )
+        p.add_argument(
+            "--no-validate-certs",
+            action="store_true",
+            help="Do not validate TLS certificates",
+        )
+        p.add_argument("--datacenter", help="Datacenter name", default="ha-datacenter")
+        p.add_argument(
+            "--esxi-hostname",
+            help="Require VM to run on this ESXi host (name or first label)",
+            default=None,
+        )
+        p.add_argument("--vmname", required=True, help="Virtual machine name")
+        p.add_argument(
+            "--delay",
+            type=float,
+            default=0.1,
+            help="Delay between key presses (seconds, default 0.1)",
+        )
+        p.add_argument(
+            "--text",
+            help="Text to send to the VM console using the HID mapping in CHAR_MAP",
+            default=TEST,
+        )
+        p.add_argument(
+            "--keep-screenshot",
+            action="store_true",
+            help="Leave the screenshot file in the datastore after downloading it",
+        )
+        p.add_argument(
+            "--no-screenshot",
+            action="store_true",
+            help="Do not request or download a VM screenshot after sending keys",
+        )
+        p.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Only print characters that would be sent, do not send any keys",
+        )
+        return p.parse_args(argv)
+
+    sys.argv.extend([
+        "--host", "192.168.200.161",
+        "--user", "root",
+        "--password", "cmb@Dm1n",
+        "--vmname", "SBCE-VM",
+        "--no-validate-certs",
+        "--text", TEST
+    ])
+    args = parse_args()
+    sys.exit(main(args))
