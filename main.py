@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - import-time capability flag
 MOD_NONE = 0x00
 MOD_LSHIFT = 0x02
 HID_CAPSLOCK = 0x39
-TEST = """echo " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&^()_*+-.,:;<=>?[]{}~`date`'"\!/|wc -c\n"""
+
 
 SPECIAL_KEYS = {
     "ENTER": 0x28,
@@ -62,9 +62,15 @@ SPECIAL_KEYS = {
     "NUMPAD_DOT": 0x63,
 }
 
+ESCAPE_SEQUENCES = {
+    "\n": "ENTER",
+    "\r": "ENTER",
+    "\b": "BACKSPACE",
+    "\t": "TAB",
+}
 
 CHAR_MAP = {
-    # Numbers
+    # Numbers and shifted symbols
     '1': (0x1E, MOD_NONE),  '!': (0x1E, MOD_LSHIFT),
     '2': (0x1F, MOD_NONE),  '@': (0x1F, MOD_LSHIFT),
     '3': (0x20, MOD_NONE),  '#': (0x20, MOD_LSHIFT),
@@ -102,10 +108,7 @@ CHAR_MAP = {
     'x': (0x1B, MOD_NONE),  'X': (0x1B, MOD_LSHIFT),
     'y': (0x1C, MOD_NONE),  'Y': (0x1C, MOD_LSHIFT),
     'z': (0x1D, MOD_NONE),  'Z': (0x1D, MOD_LSHIFT),
-    # Symbols
-    ' ':  (0x2C, MOD_NONE),
-    '\n': (0x28, MOD_NONE),  # Enter
-    '\t': (0x2B, MOD_NONE),  # Tab
+    # More symbols and space
     '-':  (0x2D, MOD_NONE),  '_':  (0x2D, MOD_LSHIFT),
     '=':  (0x2E, MOD_NONE),  '+':  (0x2E, MOD_LSHIFT),
     '[':  (0x2F, MOD_NONE),  '{':  (0x2F, MOD_LSHIFT),
@@ -117,6 +120,7 @@ CHAR_MAP = {
     ',':  (0x36, MOD_NONE),  '<':  (0x36, MOD_LSHIFT),
     '.':  (0x37, MOD_NONE),  '>':  (0x37, MOD_LSHIFT),
     '/':  (0x38, MOD_NONE),  '?':  (0x38, MOD_LSHIFT),
+    ' ':  (0x2C, MOD_NONE),
 }
 
 
@@ -174,6 +178,7 @@ def find_vm(content, vmname, datacenter=None, esxi_hostname=None):
         if esxi_hostname:
             msg += " (esxi_hostname={0!r})".format(esxi_hostname)
         raise RuntimeError(msg)
+    
     if len(matches) > 1:
         hosts = []
         for vm in matches:
@@ -314,6 +319,11 @@ def _download_datastore_file(si, content, datacenter_obj, datastore_path, out_pa
                 host = parsed_uri.netloc
 
     download_url = _normalize_datastore_url(download_url, host)
+    if not download_url:
+        raise RuntimeError("download_url is empty after normalization")
+    if not isinstance(download_url, str):
+        raise RuntimeError("download_url must be a string")
+    
     headers = {}
     cookie = getattr(stub, "cookie", None)
     if cookie:
@@ -385,11 +395,16 @@ class VMKeyboard(object):
     def type(self, text):
         skipped = []
         for ch in text:
-            if ch not in CHAR_MAP:
+            if ch not in CHAR_MAP and ch not in ESCAPE_SEQUENCES:
                 skipped.append(repr(ch))
                 continue
             hid, mod = CHAR_MAP[ch]
-            if mod == MOD_LSHIFT and ch.isalpha():
+
+            if ch in ESCAPE_SEQUENCES:
+                # Handle common escape sequences like \n, \t, \b via their special key codes.
+                self.special(ESCAPE_SEQUENCES[ch])
+                time.sleep(self.delay)
+            elif mod == MOD_LSHIFT and ch.isalpha():
                 # ESXi-safe path for uppercase letters: CapsLock toggle.
                 self._set_caps(True)
                 press_key(self.vm, hid)
@@ -467,20 +482,77 @@ def main(args):
         kb.reset_caps()
 
         all_skipped = []
-        if args.text is not None:
-            line_text = args.text
-            print("Sending provided text to VM console...")
-        else:
-            line_chars = [ch for ch in sorted(CHAR_MAP.keys()) if ch not in ("\n", "\t", "\b")]
-            line_text = "".join(line_chars)
-            print("Sending CHAR_MAP characters in a single line to VM console...")
+        for text, wait in args.texts:
+            print(f"Sending text to VM console: {text}")
+            skipped = kb.type_line(text)
+            all_skipped.extend(skipped)
+            if wait is not None:
+                time.sleep(wait)
 
-        print(line_text)
-        if args.text is not None:
-            skipped = kb.type_line(line_text)
-        else:
-            skipped = kb.type(line_text)
-        all_skipped.extend(skipped)
+            if args.screenshot:
+                # Take a screenshot for visual verification
+                try:
+                    print("Requesting VM screenshot via CreateScreenshot_Task()...")
+                    task = vm.CreateScreenshot_Task()
+                    # Simple wait loop
+                    while task.info.state not in ("success", "error"):
+                        time.sleep(1.0)
+                    if task.info.state == "success":
+                        datastore_path = _parse_datastore_path(task.info.result)
+                        print("Screenshot task completed successfully.")
+                        if datastore_path:
+                            # Resolve datacenter for transfer API
+                            if args.datacenter:
+                                dc = find_datacenter(content, args.datacenter)
+                            else:
+                                dc = _get_vm_datacenter(vm)
+                            if dc is None:
+                                print(
+                                    "Could not resolve datacenter for VM; cannot download screenshot. "
+                                    "Datastore path was: {0}".format(datastore_path),
+                                    file=sys.stderr,
+                                )
+                            else:
+                                script_dir = os.path.dirname(os.path.abspath(__file__))
+                                ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                                out_file = os.path.join(
+                                    script_dir,
+                                    "{0}-console-test-{1}.png".format(args.vmname, ts),
+                                )
+
+                                print("Downloading screenshot to:", out_file)
+                                _download_datastore_file(
+                                    si=si,
+                                    content=content,
+                                    datacenter_obj=dc,
+                                    datastore_path=datastore_path,
+                                    out_path=out_file,
+                                    verify_tls=not args.no_validate_certs,
+                                )
+                                if not args.keep_screenshot:
+                                    print("Deleting screenshot from datastore: {0}".format(datastore_path))
+                                    try:
+                                        _delete_datastore_file(
+                                            content=content,
+                                            datacenter_obj=dc,
+                                            datastore_path=datastore_path,
+                                        )
+                                    except Exception as e:
+                                        print(
+                                            "Warning: failed to delete datastore screenshot: {0}".format(e),
+                                            file=sys.stderr,
+                                        )
+                                else:
+                                    print("Leaving screenshot in datastore as requested.")
+                        else:
+                            print(
+                                "Screenshot task succeeded but no datastore path was returned "
+                                "(task.info.result={0!r})".format(task.info.result)
+                            )
+                    else:
+                        print("Screenshot task failed:", task.info.error)
+                except Exception as e:  # pragma: no cover - depends on vSphere backing
+                    print("Failed to create screenshot:", e, file=sys.stderr)
 
         print()
 
@@ -492,71 +564,6 @@ def main(args):
                     n=len(all_skipped), chars=", ".join(uniq)
                 )
             )
-
-        if not args.no_screenshot:
-            # Take a screenshot for visual verification
-            try:
-                print("Requesting VM screenshot via CreateScreenshot_Task()...")
-                task = vm.CreateScreenshot_Task()
-                # Simple wait loop
-                while task.info.state not in ("success", "error"):
-                    time.sleep(1.0)
-                if task.info.state == "success":
-                    datastore_path = _parse_datastore_path(task.info.result)
-                    print("Screenshot task completed successfully.")
-                    if datastore_path:
-                        # Resolve datacenter for transfer API
-                        if args.datacenter:
-                            dc = find_datacenter(content, args.datacenter)
-                        else:
-                            dc = _get_vm_datacenter(vm)
-                        if dc is None:
-                            print(
-                                "Could not resolve datacenter for VM; cannot download screenshot. "
-                                "Datastore path was: {0}".format(datastore_path),
-                                file=sys.stderr,
-                            )
-                        else:
-                            script_dir = os.path.dirname(os.path.abspath(__file__))
-                            ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                            out_file = os.path.join(
-                                script_dir,
-                                "{0}-console-test-{1}.png".format(args.vmname, ts),
-                            )
-
-                            print("Downloading screenshot to:", out_file)
-                            _download_datastore_file(
-                                si=si,
-                                content=content,
-                                datacenter_obj=dc,
-                                datastore_path=datastore_path,
-                                out_path=out_file,
-                                verify_tls=not args.no_validate_certs,
-                            )
-                            if not args.keep_screenshot:
-                                print("Deleting screenshot from datastore: {0}".format(datastore_path))
-                                try:
-                                    _delete_datastore_file(
-                                        content=content,
-                                        datacenter_obj=dc,
-                                        datastore_path=datastore_path,
-                                    )
-                                except Exception as e:
-                                    print(
-                                        "Warning: failed to delete datastore screenshot: {0}".format(e),
-                                        file=sys.stderr,
-                                    )
-                            else:
-                                print("Leaving screenshot in datastore as requested.")
-                    else:
-                        print(
-                            "Screenshot task succeeded but no datastore path was returned "
-                            "(task.info.result={0!r})".format(task.info.result)
-                        )
-                else:
-                    print("Screenshot task failed:", task.info.error)
-            except Exception as e:  # pragma: no cover - depends on vSphere backing
-                print("Failed to create screenshot:", e, file=sys.stderr)
 
         return 0
     except Exception as e:
@@ -570,55 +577,8 @@ def main(args):
                 pass
 
 if __name__ == "__main__":
-    def parse_args(argv=None):
-        p = argparse.ArgumentParser(
-            description="Send all CHAR_MAP characters to a VMware VM console."
-        )
-        p.add_argument("--host", required=True, help="vCenter or ESXi hostname/IP")
-        p.add_argument("--user", required=True, help="Username")
-        p.add_argument("--password", required=True, help="Password")
-        p.add_argument(
-            "--port", type=int, default=443, help="HTTPS port (default 443)"
-        )
-        p.add_argument(
-            "--no-validate-certs",
-            action="store_true",
-            help="Do not validate TLS certificates",
-        )
-        p.add_argument("--datacenter", help="Datacenter name", default="ha-datacenter")
-        p.add_argument(
-            "--esxi-hostname",
-            help="Require VM to run on this ESXi host (name or first label)",
-            default=None,
-        )
-        p.add_argument("--vmname", required=True, help="Virtual machine name")
-        p.add_argument(
-            "--delay",
-            type=float,
-            default=0.1,
-            help="Delay between key presses (seconds, default 0.1)",
-        )
-        p.add_argument(
-            "--text",
-            help="Text to send to the VM console using the HID mapping in CHAR_MAP",
-            default=TEST,
-        )
-        p.add_argument(
-            "--keep-screenshot",
-            action="store_true",
-            help="Leave the screenshot file in the datastore after downloading it",
-        )
-        p.add_argument(
-            "--no-screenshot",
-            action="store_true",
-            help="Do not request or download a VM screenshot after sending keys",
-        )
-        p.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Only print characters that would be sent, do not send any keys",
-        )
-        return p.parse_args(argv)
+    import argparse
+    import sys
 
     sys.argv.extend([
         "--host", "192.168.200.161",
@@ -626,7 +586,135 @@ if __name__ == "__main__":
         "--password", "cmb@Dm1n",
         "--vmname", "SBCE-VM",
         "--no-validate-certs",
-        "--text", TEST
+        "--text", "echo Hello World!\n", "2",
+        "--text", "echo Bye World!\n"
     ])
-    args = parse_args()
+
+    class StringOrPair(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            current = getattr(namespace, self.dest, None) or []
+            if isinstance(values, list):
+                if len(values) == 1:
+                    current.append((values[0], None))               # single string
+                else:
+                    current.append((values[0], float(values[1])))   # pair as tuple
+            else:
+                current.append((values, None))  # single string
+            setattr(namespace, self.dest, current)
+
+    class CustomHelpFormatter(argparse.HelpFormatter):
+        def _format_action_invocation(self, action):
+            if not action.option_strings:
+                # Positional argument
+                (metavar,) = self._metavar_formatter(action, action.dest)(1)
+                return metavar
+            else:
+                parts = []
+                # if the Optional doesn't take a value, format is: -s, --long
+                if action.nargs == 0:
+                    parts.extend(action.option_strings)
+                # if the Optional takes a value, format is: -s ARGS, --long=ARGS
+                else:
+                    default = action.dest.upper()
+                    args_string = self._format_args(action, default)
+                    for option_string in action.option_strings:
+                        if option_string.startswith("--"):
+                            parts.append("%s=%s" % (option_string, args_string))
+                        else:
+                            parts.append("%s %s" % (option_string, args_string))
+                return ", ".join(parts)
+
+    parser = argparse.ArgumentParser(
+        description="Send text to a VMware VM console.",
+        add_help=False,
+        formatter_class=CustomHelpFormatter,
+    )
+
+    mandatory = parser.add_argument_group("Mandatory arguments")
+    optional = parser.add_argument_group("Optional arguments")
+
+    # Add mandatory arguments
+    mandatory.add_argument(
+        "--host",
+        required=True,
+        help="vCenter or ESXi hostname/IP"
+    )
+    mandatory.add_argument(
+        "--user",
+        required=True,
+        help="vCenter or ESXi username"
+    )
+    mandatory.add_argument(
+        "--password",
+        required=True,
+        help="vCenter or ESXi password"
+    )
+    mandatory.add_argument(
+        "--vmname",
+        required=True,
+        help="Virtual Machine name"
+    )
+    mandatory.add_argument(
+        "--text",
+        nargs='+',
+        dest="texts",
+        action=StringOrPair,
+        help="Text to send to the VM console, optionally followed by wait time in seconds,\
+              or multiple --text arguments each with their own text and optional wait time"
+    )
+    
+    # Add optional arguments
+    optional.add_argument(
+        "-h", "--help",
+        action="help",
+        help="show this help message and exit"
+    )
+    optional.add_argument(
+        "--datacenter",
+        default="ha-datacenter",
+        help="Datacenter name (default 'ha-datacenter')"
+    )
+    optional.add_argument(
+        "--esxi-hostname",
+        default=None,
+        help="Require VM to run on this ESXi host (name or first label)"
+    )
+    optional.add_argument(
+        "--port",
+        type=int,
+        default=443,
+        help="HTTPS port (default 443)"
+    )
+    optional.add_argument(
+        "--delay",
+        type=float,
+        default=0.1,
+        help="Delay between key presses (seconds, default 0.1)"
+    )
+    optional.add_argument(
+        "--no-validate-certs",
+        action="store_true",
+        default=False,
+        help="Do not validate TLS certificates"
+    )
+    optional.add_argument(
+        "--screenshot",
+        action="store_true",
+        default=False,
+        help="Request/download a screenshot of console after sending text"
+    )
+    optional.add_argument(
+        "--keep-screenshot",
+        action="store_true",
+        default=False,
+        help="Leave screenshot in datastore after downloading it"
+    )
+    optional.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only print characters that would be sent, do not send any keys"
+    )
+
+    args = parser.parse_args()
+    print(args)
     sys.exit(main(args))
