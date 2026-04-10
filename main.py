@@ -1,13 +1,8 @@
 
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
 """
-Shared VMware console keyboard utilities for Ansible modules and standalone tools.
+VMware console keyboard utility.
 """
 
 import os
@@ -62,15 +57,9 @@ SPECIAL_KEYS = {
     "NUMPAD_DOT": 0x63,
 }
 
-ESCAPE_SEQUENCES = {
-    "\n": "ENTER",
-    "\r": "ENTER",
-    "\b": "BACKSPACE",
-    "\t": "TAB",
-}
 
 CHAR_MAP = {
-    # Numbers and shifted symbols
+    # Numbers and punctuations
     '1': (0x1E, MOD_NONE),  '!': (0x1E, MOD_LSHIFT),
     '2': (0x1F, MOD_NONE),  '@': (0x1F, MOD_LSHIFT),
     '3': (0x20, MOD_NONE),  '#': (0x20, MOD_LSHIFT),
@@ -108,7 +97,7 @@ CHAR_MAP = {
     'x': (0x1B, MOD_NONE),  'X': (0x1B, MOD_LSHIFT),
     'y': (0x1C, MOD_NONE),  'Y': (0x1C, MOD_LSHIFT),
     'z': (0x1D, MOD_NONE),  'Z': (0x1D, MOD_LSHIFT),
-    # More symbols and space
+    # More punctuations and space
     '-':  (0x2D, MOD_NONE),  '_':  (0x2D, MOD_LSHIFT),
     '=':  (0x2E, MOD_NONE),  '+':  (0x2E, MOD_LSHIFT),
     '[':  (0x2F, MOD_NONE),  '{':  (0x2F, MOD_LSHIFT),
@@ -121,6 +110,11 @@ CHAR_MAP = {
     '.':  (0x37, MOD_NONE),  '>':  (0x37, MOD_LSHIFT),
     '/':  (0x38, MOD_NONE),  '?':  (0x38, MOD_LSHIFT),
     ' ':  (0x2C, MOD_NONE),
+    # None printables
+    '\n': (0x28, MOD_NONE),
+    '\r': (0x28, MOD_NONE),
+    '\t': (0x2B, MOD_NONE),
+    '\b': (0x2A, MOD_NONE),
 }
 
 
@@ -395,46 +389,49 @@ class VMKeyboard(object):
     def type(self, text):
         skipped = []
         for ch in text:
-            if ch not in CHAR_MAP and ch not in ESCAPE_SEQUENCES:
-                skipped.append(repr(ch))
+
+            if ch not in CHAR_MAP:
+                skipped.append(ch)
                 continue
+            
             hid, mod = CHAR_MAP[ch]
 
-            if ch in ESCAPE_SEQUENCES:
-                # Handle common escape sequences like \n, \t, \b via their special key codes.
-                self.special(ESCAPE_SEQUENCES[ch])
-                time.sleep(self.delay)
-            elif mod == MOD_LSHIFT and ch.isalpha():
-                # ESXi-safe path for uppercase letters: CapsLock toggle.
+            if mod == MOD_LSHIFT and ch.isalpha():
                 self._set_caps(True)
                 press_key(self.vm, hid)
-                time.sleep(self.delay)
             elif mod == MOD_LSHIFT:
-                # Attempt all shift-modified punctuation/symbols by sending the
-                # shifted HID code rather than skipping them.
                 self._set_caps(False)
                 press_key(self.vm, hid, modifiers=MOD_LSHIFT)
-                time.sleep(self.delay)
             else:
                 self._set_caps(False)
                 press_key(self.vm, hid)
-                time.sleep(self.delay)
+            
+            time.sleep(self.delay)
+        
         self._set_caps(False)
         return skipped
 
     def type_line(self, text):
         skipped = self.type(text)
+        if text and not text.endswith("\n"):
+            self.special("ENTER")
         return skipped
 
 
 def connect_vsphere(host, user, password, port=443, validate_certs=True):
     if not HAS_PYVMOMI:
         raise RuntimeError("pyVmomi is required")
+    if SmartConnect is None:
+        raise RuntimeError("SmartConnect is not available")
     if validate_certs:
-        si = SmartConnect(host=host, user=user, pwd=password, port=port)
+        si = SmartConnect(
+            host=host, user=user, pwd=password, port=port
+        )
     else:
         ctx = ssl._create_unverified_context()
-        si = SmartConnect(host=host, user=user, pwd=password, port=port, sslContext=ctx)
+        si = SmartConnect(
+            host=host, user=user, pwd=password, port=port, sslContext=ctx
+        )
     return si
 
 
@@ -586,8 +583,8 @@ if __name__ == "__main__":
         "--password", "cmb@Dm1n",
         "--vmname", "SBCE-VM",
         "--no-validate-certs",
-        "--text", "echo Hello World!\n", "2",
-        "--text", "echo Bye World!\n"
+        "--text", "echo Hello World!\n", "5",
+        "--text", "echo Bye World!", "1",
     ])
 
     class StringOrPair(argparse.Action):
