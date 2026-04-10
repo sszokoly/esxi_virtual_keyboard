@@ -127,7 +127,7 @@ def host_name_matches(actual, wanted):
     return a.split(".")[0] == w.split(".")[0]
 
 
-def find_datacenter(content, name):
+def _find_datacenter(content, name):
     container = content.viewManager.CreateContainerView(
         content.rootFolder, [vim.Datacenter], True
     )
@@ -140,9 +140,9 @@ def find_datacenter(content, name):
     raise RuntimeError("Datacenter not found: {0!r}".format(name))
 
 
-def find_vm(content, vmname, datacenter=None, esxi_hostname=None):
+def _find_vm(content, vmname, datacenter=None, esxi_hostname=None):
     if datacenter:
-        dc = find_datacenter(content, datacenter)
+        dc = _find_datacenter(content, datacenter)
         root = dc.vmFolder
     else:
         root = content.rootFolder
@@ -201,7 +201,7 @@ def _make_modifier_type(modifiers):
     return mod
 
 
-def press_key(vm, hid_code, modifiers=0):
+def _press_key(vm, hid_code, modifiers=0):
     spec = vim.vm.UsbScanCodeSpec()
     down = vim.vm.UsbScanCodeSpec.KeyEvent()
     down.usbHidCode = (hid_code << 16) | 0x07
@@ -364,14 +364,14 @@ class VMKeyboard(object):
 
     def _set_caps(self, wanted):
         if self.caps_on != wanted:
-            press_key(self.vm, HID_CAPSLOCK)
+            _press_key(self.vm, HID_CAPSLOCK)
             time.sleep(0.1)
             self.caps_on = wanted
 
     def reset_caps(self):
-        press_key(self.vm, HID_CAPSLOCK)
+        _press_key(self.vm, HID_CAPSLOCK)
         time.sleep(0.1)
-        press_key(self.vm, HID_CAPSLOCK)
+        _press_key(self.vm, HID_CAPSLOCK)
         time.sleep(0.1)
         self.caps_on = False
 
@@ -383,7 +383,7 @@ class VMKeyboard(object):
                     key_name, sorted(SPECIAL_KEYS.keys())
                 )
             )
-        press_key(self.vm, SPECIAL_KEYS[key_name])
+        _press_key(self.vm, SPECIAL_KEYS[key_name])
         time.sleep(self.delay)
 
     def type(self, text):
@@ -398,13 +398,13 @@ class VMKeyboard(object):
 
             if mod == MOD_LSHIFT and ch.isalpha():
                 self._set_caps(True)
-                press_key(self.vm, hid)
+                _press_key(self.vm, hid)
             elif mod == MOD_LSHIFT:
                 self._set_caps(False)
-                press_key(self.vm, hid, modifiers=MOD_LSHIFT)
+                _press_key(self.vm, hid, modifiers=MOD_LSHIFT)
             else:
                 self._set_caps(False)
-                press_key(self.vm, hid)
+                _press_key(self.vm, hid)
             
             time.sleep(self.delay)
         
@@ -418,7 +418,7 @@ class VMKeyboard(object):
         return skipped
 
 
-def connect_vsphere(host, user, password, port=443, validate_certs=True):
+def _connect_vsphere(host, user, password, port=443, validate_certs=True):
     if not HAS_PYVMOMI:
         raise RuntimeError("pyVmomi is required")
     if SmartConnect is None:
@@ -435,7 +435,7 @@ def connect_vsphere(host, user, password, port=443, validate_certs=True):
     return si
 
 
-def main(args):
+def esxi_vm_console(args):
     if not HAS_PYVMOMI:
         print("pyVmomi is required for this tester", file=sys.stderr)
         return 1
@@ -447,7 +447,7 @@ def main(args):
     )
     si = None
     try:
-        si = connect_vsphere(
+        si = _connect_vsphere(
             host=args.host,
             user=args.user,
             password=args.password,
@@ -455,7 +455,7 @@ def main(args):
             validate_certs=not args.no_validate_certs,
         )
         content = si.RetrieveContent()
-        vm = find_vm(
+        vm = _find_vm(
             content,
             args.vmname,
             datacenter=args.datacenter,
@@ -500,7 +500,7 @@ def main(args):
                         if datastore_path:
                             # Resolve datacenter for transfer API
                             if args.datacenter:
-                                dc = find_datacenter(content, args.datacenter)
+                                dc = _find_datacenter(content, args.datacenter)
                             else:
                                 dc = _get_vm_datacenter(vm)
                             if dc is None:
@@ -592,11 +592,11 @@ if __name__ == "__main__":
             current = getattr(namespace, self.dest, None) or []
             if isinstance(values, list):
                 if len(values) == 1:
-                    current.append((values[0], None))               # single string
+                    current.append((values[0], None))
                 else:
-                    current.append((values[0], float(values[1])))   # pair as tuple
+                    current.append((values[0], float(values[1])))
             else:
-                current.append((values, None))  # single string
+                current.append((values, None))
             setattr(namespace, self.dest, current)
 
     class CustomHelpFormatter(argparse.HelpFormatter):
@@ -607,10 +607,10 @@ if __name__ == "__main__":
                 return metavar
             else:
                 parts = []
-                # if the Optional doesn't take a value, format is: -s, --long
+                # if Optional doesn't take a value, format is: -s, --long
                 if action.nargs == 0:
                     parts.extend(action.option_strings)
-                # if the Optional takes a value, format is: -s ARGS, --long=ARGS
+                # if Optional takes a value, format is: -s ARGS, --long=ARGS
                 else:
                     default = action.dest.upper()
                     args_string = self._format_args(action, default)
@@ -714,4 +714,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     print(args)
-    sys.exit(main(args))
+    sys.exit(esxi_vm_console(args))
